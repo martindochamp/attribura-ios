@@ -1,0 +1,184 @@
+# Attribura iOS SDK — LLM integration guide
+
+> Paste this whole file into your AI assistant (Claude, ChatGPT, …) and ask it to add
+> Attribura self-report attribution to your iOS app. It is complete and self-contained.
+
+## What this SDK does
+
+Attribura measures which content drives real revenue. Deterministic tracking links cover
+tapped traffic, but they miss two things: **dark social** (a friend showed someone the
+app) and **App Store Search** (someone sees a Reel, then searches the app by name — Apple
+logs it as Search, not your campaign). The SDK closes that gap: it captures the answer to
+an in-app *"How did you hear about us?"* question and sends it to Attribura, which
+correlates the reported channel with the content you posted.
+
+- The SDK is **headless** — it ships NO UI. The app developer builds the onboarding step
+  / bottom sheet and calls the SDK when the user picks an answer.
+- It is **fire-and-forget**, thread-safe, has **zero third-party dependencies**, and
+  buffers a failed send to disk to retry on the next launch.
+- Attribution is **confidence-scored, never deterministic** — a self-report never
+  overrides a certified link or discount code.
+
+Requirements: iOS 13+, Swift 5.9+.
+
+## Install (Swift Package Manager)
+
+Xcode → File → Add Package Dependencies… → `https://github.com/martindochamp/attribura-ios`
+(Up to Next Major Version, from 0.1.0). Or in Package.swift:
+
+```swift
+.package(url: "https://github.com/martindochamp/attribura-ios", from: "0.1.0")
+```
+
+Then add `"Attribura"` to your target's dependencies and `import Attribura`.
+
+## The entire public API
+
+```swift
+// Configure once, as early as possible. `token` is the org ingest token from the
+// Attribura dashboard (Settings → Integrations → Attribura SDK). Optionally pass a
+// default userId. Also flushes answers buffered from a previous launch.
+Attribura.configure(token: String, baseURL: URL, userId: String? = nil)
+
+// Update the default user id later (e.g. after sign-in).
+Attribura.setUserId(_ userId: String?)
+
+// Report where a user heard about you. Fire-and-forget; safe on the main thread.
+// No-op (asserts in debug) if called before configure.
+Attribura.reportSource(_ source: AttributionSource,
+                       userId: String? = nil,
+                       prompt: String? = nil,
+                       context: [String: String]? = nil)
+```
+
+### AttributionSource (enum)
+
+Linkable channels (cross-checked against your recent certified-link posts):
+`.instagram .tiktok .youtube .x .reddit .linkedin .threads .facebook`
+
+Dark social (unlinkable, but the traffic every link misses):
+`.googleSearch .appStoreSearch .friend .podcast .newsletter`
+
+Anything else: `.other("Some Newsletter")` — free-text, lands in the dark-social bucket.
+
+## Integration steps
+
+1. Configure once at launch:
+
+```swift
+import Attribura
+
+// e.g. in your App's init, or application(_:didFinishLaunchingWithOptions:)
+Attribura.configure(
+    token: "atb_ingest_xxx",                              // from the dashboard
+    baseURL: URL(string: "https://api.attribura.com")!
+)
+```
+
+2. Use the SAME user id your revenue provider reports. If you use Superwall, that's
+   `Superwall.shared.userAttributes` / the `app_user_id` you set — pass the identical
+   value so the purchase can inherit the self-reported channel:
+
+```swift
+Attribura.setUserId(myAppUserId)   // once you know it (after sign-in)
+```
+
+3. Show your own "How did you hear about us?" step during onboarding, and call the SDK
+   when the user answers (the SDK ships no UI — this sheet is yours):
+
+```swift
+import SwiftUI
+import Attribura
+
+struct HeardAboutUsSheet: View {
+    let userId: String
+    var onDone: () -> Void
+
+    private let options: [(String, AttributionSource)] = [
+        ("Instagram", .instagram), ("TikTok", .tiktok), ("YouTube", .youtube),
+        ("A friend", .friend), ("A podcast", .podcast), ("App Store search", .appStoreSearch),
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("How did you hear about us?").font(.title3.bold())
+            ForEach(options, id: \.0) { label, source in
+                Button(label) {
+                    Attribura.reportSource(source, userId: userId,
+                                           prompt: "How did you hear about us?")
+                    onDone()
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .padding()
+    }
+}
+```
+
+## Wire protocol (what the SDK sends)
+
+The SDK POSTs to `{baseURL}/v1/ingest/self_report`, authenticating with the org ingest
+token in the `X-Attribura-Token` header. You never call this directly — it's here so you
+understand exactly what leaves the device. Example equivalent curl:
+
+```
+curl -X POST "https://api.attribura.com/v1/ingest/self_report" \
+  -H "X-Attribura-Token: atb_ingest_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "source": "instagram",
+        "user_id": "app-user-123",
+        "prompt": "How did you hear about us?",
+        "occurred_at": "2026-07-09T10:00:00Z",
+        "platform": "ios",
+        "sdk_version": "0.1.0"
+      }'
+```
+
+Response:
+
+```json
+{
+  "ok": true,
+  "channel": "instagram",
+  "attribution": {
+    "method": "self_report_verified",
+    "confidence": 0.6,
+    "distribution_id": "…"
+  }
+}
+```
+
+Only `source` is required. `user_id`, `prompt`, `occurred_at`, `context`, `sdk_version`
+are optional. The token is **write-only** — it cannot read data back.
+
+## How attribution resolves (server side)
+
+The reported answer is normalized to a channel and cross-checked against your recent
+(last 30 days) certified-link posts:
+
+- Exactly one recent post on that channel → `self_report_verified` (pins the exact post),
+  confidence 0.6.
+- Zero or several recent posts on a linkable channel → `self_report` (channel-level),
+  confidence 0.45.
+- A non-linkable answer (friend, podcast, App Store search, …) → `dark_social`,
+  confidence 0.4.
+
+Deterministic signals (campaign token, discount code) always win over self-report, so a
+purchase that already has a code/token is never overridden by a survey answer.
+
+## Best practices
+
+- Call `configure` once, as early as possible; it's cheap and flushes buffered answers.
+- Ask the question ONCE per user, early in onboarding, before the paywall.
+- Always pass the user id that your revenue provider (Superwall/Stripe) reports for that
+  same person — this is the join key that turns an answer into attributed revenue.
+- Keep your own answer labels close to the enum cases; use `.other("…")` for the rest.
+- It's fine to call `reportSource` on the main thread from a button action.
+
+## Testing
+
+`swift test` — the package's tests use a mock URLProtocol (no network). To smoke-test end
+to end, point `baseURL` at your API and confirm a row appears under the dashboard's
+Self-reported panel.
