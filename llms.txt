@@ -175,6 +175,9 @@ purchase that already has a code/token is never overridden by a survey answer.
 - Always pass the user id that your revenue provider (Superwall/Stripe) reports for that
   same person — this is the join key that turns an answer into attributed revenue.
 - Keep your own answer labels close to the enum cases; use `.other("…")` for the rest.
+- RANDOMIZE the option order in your sheet per user (e.g. Swift `.shuffled()`). People who
+  rush onboarding tend to tap the same position every time; shuffling averages out that
+  positional bias so your channel mix isn't skewed toward whatever you list first.
 - It's fine to call `reportSource` on the main thread from a button action.
 
 ## Testing

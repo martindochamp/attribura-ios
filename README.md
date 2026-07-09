@@ -106,6 +106,10 @@ struct HeardAboutUsSheet: View {
 }
 ```
 
+> **Tip — randomize the order.** People rushing onboarding tend to tap the same position
+> every time (usually the first), which quietly biases your data. Shuffle the options per
+> user with `options.shuffled()` so that noise averages out.
+
 ---
 
 ## API
