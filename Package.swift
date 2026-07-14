@@ -10,7 +10,12 @@ let package = Package(
     ],
     targets: [
         // Zero third-party dependencies — just Foundation/URLSession.
-        .target(name: "Attribura"),
+        // The privacy manifest is bundled so Xcode aggregates it into the app's
+        // App Store privacy report automatically.
+        .target(
+            name: "Attribura",
+            resources: [.copy("PrivacyInfo.xcprivacy")]
+        ),
         .testTarget(name: "AttriburaTests", dependencies: ["Attribura"]),
     ]
 )

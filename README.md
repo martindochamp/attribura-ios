@@ -164,6 +164,16 @@ data back.
 
 ---
 
+## Privacy
+
+Ships a **privacy manifest** (`PrivacyInfo.xcprivacy`): it declares a **User ID** and one
+**Other** data type (the answer), both *linked to the user*, *not used for tracking*,
+purpose **Analytics**. The SDK does **not** track in Apple's sense, so it needs **no ATT
+prompt**. Declare the same in your app's App Store privacy label. No device or advertising
+identifiers are collected.
+
+---
+
 ## Testing
 
 ```

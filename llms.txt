@@ -168,6 +168,28 @@ The reported answer is normalized to a channel and cross-checked against your re
 Deterministic signals (campaign token, discount code) always win over self-report, so a
 purchase that already has a code/token is never overridden by a survey answer.
 
+## Privacy & App Store
+
+The SDK sends only what you pass (the answer + the user id) plus a timestamp and its own
+version — no device identifiers, no advertising id (IDFA), nothing read back off the
+device. It does **not** "track" in Apple's sense: it never links your users' data with
+third-party data for ad targeting and shares nothing with data brokers — so it triggers
+**no App Tracking Transparency (ATT) prompt**.
+
+Two things to get right before you ship to the App Store:
+
+1. The package ships a **privacy manifest** (`PrivacyInfo.xcprivacy`) declaring what it
+   collects: a **User ID** and one **Other** data type (the answer) — both marked *linked
+   to the user*, *not used for tracking*, purpose **Analytics**; `NSPrivacyTracking` is
+   `false`. Xcode aggregates this into your app's privacy report automatically — you don't
+   copy or configure anything.
+2. Reflect the same in **your app's** App Store privacy label (App Store Connect → App
+   Privacy): a **User ID** and **Other Data**, used for **Analytics**, *linked to the
+   user*, *not* used for tracking. If you already declare a user id for your revenue
+   provider (Superwall/Stripe), you're most of the way there.
+
+Since you pass the user id, keep your own privacy policy consistent with what you collect.
+
 ## Best practices
 
 - Call `configure` once, as early as possible; it's cheap and flushes buffered answers.
