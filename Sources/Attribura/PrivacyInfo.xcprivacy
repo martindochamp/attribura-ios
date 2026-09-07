@@ -25,6 +25,37 @@
 				<string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
 			</array>
 		</dict>
+		<!-- Which onboarding steps a run reached, so the dashboard can draw the
+		     drop-off funnel. Step NAMES only — the ones the app itself declared.
+		     Linked to the user, analytics only, never used for tracking. -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeProductInteraction</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
+			</array>
+		</dict>
+		<!-- The transactions Apple signed, forwarded verbatim so the server can
+		     verify them against Apple's root and credit the post that earned the
+		     sale. Product id, price and Apple's transaction id — linked to the
+		     user, analytics only, and never shared with anyone. -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypePurchaseHistory</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
+			</array>
+		</dict>
 		<!-- The "How did you hear about us?" answer (a marketing-channel label). -->
 		<dict>
 			<key>NSPrivacyCollectedDataType</key>
@@ -40,7 +71,11 @@
 		</dict>
 	</array>
 	<!-- No "required reason" APIs: the retry queue is plain file I/O in the caches
-	     directory — no file-timestamp, UserDefaults, disk-space, or boot-time APIs. -->
+	     directory, the install id is plain file I/O in Application Support
+	     (deliberately NOT UserDefaults, which is one, and deliberately not the
+	     Keychain, which would outlive the app), and the onboarding run id is held
+	     in memory for the life of the process — no file-timestamp, UserDefaults,
+	     disk-space, or boot-time APIs. -->
 	<key>NSPrivacyAccessedAPITypes</key>
 	<array/>
 </dict>

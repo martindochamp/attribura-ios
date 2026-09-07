@@ -1,7 +1,8 @@
 # Attribura iOS SDK — LLM integration guide
 
 > Paste this whole file into your AI assistant (Claude, ChatGPT, …) and ask it to add
-> Attribura self-report attribution to your iOS app. It is complete and self-contained.
+> Attribura self-report attribution — and, optionally, onboarding funnel tracking — to
+> your iOS app. It is complete and self-contained.
 
 ## What this SDK does
 
@@ -17,17 +18,24 @@ correlates the reported channel with the content you posted.
 - It is **fire-and-forget**, thread-safe, has **zero third-party dependencies**, and
   buffers a failed send to disk to retry on the next launch.
 - Attribution is **confidence-scored, never deterministic** — a self-report never
-  overrides a certified link or discount code.
+  overrides a certified link.
+
+It optionally also records **which onboarding steps each run reached**. That second job is
+only worth doing because of the first: a drop-off funnel on its own is a commodity, but
+this one is joined to the channel the same run self-reported, so you can pull
+*"TikTok installs drop at the notification step, Instagram installs don't"* — a split no
+general analytics tool can make, because it never asked the question. Read it back with
+the `get_onboarding_funnel` MCP tool or the matching data API endpoint.
 
 Requirements: iOS 13+, Swift 5.9+.
 
 ## Install (Swift Package Manager)
 
 Xcode → File → Add Package Dependencies… → `https://github.com/martindochamp/attribura-ios`
-(Up to Next Major Version, from 0.1.0). Or in Package.swift:
+(Up to Next Major Version, from 0.2.1). Or in Package.swift:
 
 ```swift
-.package(url: "https://github.com/martindochamp/attribura-ios", from: "0.1.0")
+.package(url: "https://github.com/martindochamp/attribura-ios", from: "0.2.1")
 ```
 
 Then add `"Attribura"` to your target's dependencies and `import Attribura`.
@@ -37,11 +45,33 @@ Then add `"Attribura"` to your target's dependencies and `import Attribura`.
 ```swift
 // Configure once, as early as possible. `token` is the org ingest token from the
 // Attribura dashboard (Settings → Integrations → Attribura SDK). Optionally pass a
-// default userId. Also flushes answers buffered from a previous launch.
-Attribura.configure(token: String, baseURL: URL, userId: String? = nil)
+// default userId. `onboarding` declares your onboarding screens IN ORDER and is only
+// needed if you want the funnel. Also flushes events buffered from a previous launch.
+Attribura.configure(token: String, baseURL: URL, userId: String? = nil,
+                    onboarding: [String] = [])
 
-// Update the default user id later (e.g. after sign-in).
+// Update the default user id later (e.g. after sign-in). Attaches the id to the WHOLE
+// current onboarding run, including steps recorded before sign-in.
 Attribura.setUserId(_ userId: String?)
+
+// Mark that this run reached an onboarding step. The name must be one you declared in
+// configure(onboarding:). Call it from onAppear / viewDidAppear of each screen.
+Attribura.step(_ name: String)
+
+// Start reporting purchases. Call once, right after configure. iOS 15+.
+// Sends every StoreKit transaction exactly as Apple signed it; the server checks that
+// signature against Apple's root before anything counts. Never calls finish().
+Attribura.observePurchases()
+
+// This install's anonymous id, and the same value as a UUID for StoreKit. Minted by the
+// SDK (NOT identifierForVendor — that would make your app declare a Device ID), stored
+// in a file in Application Support, gone when the app is deleted.
+Attribura.anonymousId: String
+Attribura.purchaseToken: UUID
+
+// Start a NEW onboarding run. Only needed if one app session can onboard twice (e.g. a
+// sign-out that returns the user to the start). Each run records a given step once.
+Attribura.newRun()
 
 // Report where a user heard about you. Fire-and-forget; safe on the main thread.
 // No-op (asserts in debug) if called before configure.
@@ -75,9 +105,30 @@ Attribura.configure(
 )
 ```
 
-2. Use the SAME user id your revenue provider reports. If you use Superwall, that's
-   `Superwall.shared.userAttributes` / the `app_user_id` you set — pass the identical
-   value so the purchase can inherit the self-reported channel:
+2. Report the money, so an answer becomes an amount. Two lines, and NOTHING to
+   configure in App Store Connect:
+
+```swift
+Attribura.observePurchases()                       // once, right after configure
+
+let result = try await product.purchase(           // on every purchase
+    options: [.appAccountToken(Attribura.purchaseToken)]
+)
+```
+
+   The `appAccountToken` is the whole trick: Apple stores it on the transaction and
+   signs it, so the sale arrives already tied to the id that answered the question.
+   Omit it and the sale is still recorded but belongs to nobody.
+
+   Sandbox purchases are welcome — real signatures on fake money, kept apart so no
+   revenue figure counts them. Use them to prove the chain before you ship.
+
+   You do NOT have to unplug Superwall or Stripe first. Once an app reports Apple's own
+   transactions, those are the ones that count, and the webhook stops crediting the same
+   sale a second time — the direct road wins because Apple signs what it says.
+
+2b. OPTIONAL — if your app has accounts, or if your paywall provider reports its own id
+   (Superwall's `app_user_id`), pass it so both line up:
 
 ```swift
 Attribura.setUserId(myAppUserId)   // once you know it (after sign-in)
@@ -153,6 +204,48 @@ Response:
 Only `source` is required. `user_id`, `prompt`, `occurred_at`, `context`, `sdk_version`
 are optional. The token is **write-only** — it cannot read data back.
 
+When you track onboarding steps, the SDK also sends `run_id` (a per-launch id it mints in
+memory) and `at_step` (the last step fired) on the self-report — those two are what let
+the funnel be split by channel when you read it back.
+
+Steps go to `{baseURL}/v1/ingest/steps`, **batched — one request per run**, not per step:
+
+```
+curl -X POST "https://api.attribura.com/v1/ingest/steps" \
+  -H "X-Attribura-Token: atb_ingest_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "run_id": "6f1c…",
+        "onboarding": ["welcome","goal","source","notifications","paywall"],
+        "user_id": "app-user-123",
+        "platform": "ios",
+        "sdk_version": "0.2.1",
+        "steps": [{"step": "welcome"}, {"step": "goal"}]
+      }'
+```
+
+Steps are written to disk before they are sent, so an app killed mid-onboarding still
+reports every step it reached. Resends are idempotent: a run records a given step once.
+A step name you did not declare comes back in `undeclared` — a typo shows up here rather
+than as a funnel row that looks wrong weeks later.
+
+### Purchases
+
+Transactions go to `{baseURL}/v1/ingest/storekit`, batched, as the JWS strings StoreKit
+produced — nothing added, nothing parsed client-side:
+
+```bash
+curl -X POST "https://api.attribura.com/v1/ingest/storekit" \
+  -H "X-Attribura-Token: atb_ingest_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{"signed_transactions": ["eyJhbGciOiJFUzI1NiIsIng1YyI6Wy..."]}'
+```
+
+The server verifies each one against Apple's root certificate before it becomes revenue,
+and answers with what it did: `{"ok": true, "stored": 1, "duplicates": 0, "rejected": 0}`.
+A transaction that fails verification is dropped and never fails the batch behind it.
+Apple's `transactionId` is the idempotency key, so replaying a launch costs nothing.
+
 ## How attribution resolves (server side)
 
 The reported answer is normalized to a channel and cross-checked against your recent
@@ -165,8 +258,8 @@ The reported answer is normalized to a channel and cross-checked against your re
 - A non-linkable answer (friend, podcast, App Store search, …) → `dark_social`,
   confidence 0.4.
 
-Deterministic signals (campaign token, discount code) always win over self-report, so a
-purchase that already has a code/token is never overridden by a survey answer.
+A deterministic signal (the campaign token) always wins over self-report, so a
+purchase that already carries a token is never overridden by a survey answer.
 
 ## Privacy & App Store
 
@@ -179,14 +272,23 @@ third-party data for ad targeting and shares nothing with data brokers — so it
 Two things to get right before you ship to the App Store:
 
 1. The package ships a **privacy manifest** (`PrivacyInfo.xcprivacy`) declaring what it
-   collects: a **User ID** and one **Other** data type (the answer) — both marked *linked
-   to the user*, *not used for tracking*, purpose **Analytics**; `NSPrivacyTracking` is
-   `false`. Xcode aggregates this into your app's privacy report automatically — you don't
-   copy or configure anything.
+   collects: a **User ID**, one **Other** data type (the answer), and **Product
+   Interaction** (the onboarding step names you declared) — all marked *linked to the
+   user*, *not used for tracking*, purpose **Analytics**; `NSPrivacyTracking` is `false`.
+   Xcode aggregates this into your app's privacy report automatically — you don't copy or
+   configure anything. The onboarding run id is held in memory for the life of the
+   process and never written to disk, which is why the manifest declares no
+   required-reason APIs.
 2. Reflect the same in **your app's** App Store privacy label (App Store Connect → App
    Privacy): a **User ID** and **Other Data**, used for **Analytics**, *linked to the
-   user*, *not* used for tracking. If you already declare a user id for your revenue
-   provider (Superwall/Stripe), you're most of the way there.
+   user*, *not* used for tracking — plus **Product Interaction** if you call `step`, and
+   **Purchase History** if you call `observePurchases`. If you already declare a user id
+   for your revenue provider (Superwall/Stripe), you're most of the way there.
+3. **No device or advertising identifiers.** `Attribura.anonymousId` is a UUID the SDK
+   mints, deliberately not `identifierForVendor`, so you never have to declare a Device
+   ID. It lives in a file in Application Support — not UserDefaults (a required-reason
+   API) and not the Keychain (which would outlive the app). Deleting the app deletes it:
+   a reinstall is a new person, and no ATT prompt is ever needed.
 
 Since you pass the user id, keep your own privacy policy consistent with what you collect.
 
@@ -194,13 +296,22 @@ Since you pass the user id, keep your own privacy policy consistent with what yo
 
 - Call `configure` once, as early as possible; it's cheap and flushes buffered answers.
 - Ask the question ONCE per user, early in onboarding, before the paywall.
-- Always pass the user id that your revenue provider (Superwall/Stripe) reports for that
-  same person — this is the join key that turns an answer into attributed revenue.
+- Call `observePurchases()` and pass `.appAccountToken(Attribura.purchaseToken)` on every
+  purchase — that pair is what turns an answer into attributed revenue, with no account
+  and no permission prompt.
+- If you also use Superwall or Stripe, pass the id THEY report via `setUserId` so both
+  sides line up — and send purchases through one path only.
 - Keep your own answer labels close to the enum cases; use `.other("…")` for the rest.
 - RANDOMIZE the option order in your sheet per user (e.g. Swift `.shuffled()`). People who
   rush onboarding tend to tap the same position every time; shuffling averages out that
   positional bias so your channel mix isn't skewed toward whatever you list first.
 - It's fine to call `reportSource` on the main thread from a button action.
+- If you track the funnel, ASK THE QUESTION EARLY. The funnel can only be split by channel
+  from the step where the answer arrives downwards — a run that quits before it never
+  reported a channel, so the screens above show a total and no breakdown. Every screen you
+  move the question up lights one more step. The trade runs the other way too: asked on
+  screen one, the question costs some completion. After one easy commitment and before
+  your first real ask is the sweet spot.
 
 ## Testing
 
