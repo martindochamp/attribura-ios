@@ -29,7 +29,7 @@ import Foundation
 /// webhooks use — from **Settings → Integrations → Attribura SDK** in the dashboard.
 public enum Attribura {
     /// SDK version, sent with every event (for support/debugging).
-    public static let version = "0.3.0"
+    public static let version = "0.3.1"
 
     static let lock = NSLock()
     static var client: IngestClient?

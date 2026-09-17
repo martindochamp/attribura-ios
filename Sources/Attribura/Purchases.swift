@@ -111,11 +111,17 @@ extension Attribura {
     /// bother inspecting `VerificationResult` first: a receipt this app judged for
     /// itself would still have to be judged again.
     ///
-    /// It reports two streams. `currentEntitlements` catches up on what the person
-    /// already owns — the install that bought before the SDK existed, or before the
-    /// network came back. `updates` is everything from now on, including renewals
-    /// and refunds Apple issues while the app is closed, which arrive at the next
-    /// launch.
+    /// It reports one stream: `Transaction.updates` — every purchase made from now
+    /// on, plus renewals and refunds Apple issues while the app is closed, which
+    /// arrive at the next launch.
+    ///
+    /// # Why it does not also replay what the person already owns
+    ///
+    /// A purchase made before this SDK existed carries no `appAccountToken`, so it
+    /// can never be tied to a source — replaying it would only announce an old sale
+    /// as a new one. The "network came back" case doesn't need a catch-up pass
+    /// either: the on-disk retry queue and `Transaction.updates` itself (which
+    /// redelivers unfinished transactions at launch) already cover it.
     ///
     /// # It never calls `finish()`
     ///
@@ -130,14 +136,6 @@ extension Attribura {
         guard !alreadyRunning else { return }
 
         let task = Task.detached(priority: .background) {
-            // The catch-up pass first, so a purchase made before this launch is
-            // reported before anything new lands on top of it.
-            var owned: [String] = []
-            for await result in Transaction.currentEntitlements {
-                owned.append(result.jwsRepresentation)
-            }
-            report(owned)
-
             for await result in Transaction.updates {
                 report([result.jwsRepresentation])
             }
