@@ -338,4 +338,28 @@ final class AttriburaTests: XCTestCase {
         XCTAssertEqual(body?["source"] as? String, "tiktok")
         XCTAssertEqual(body?["user_id"] as? String, "default-user")
     }
+
+    /// An app with no accounts passes no id at all. The answer must then carry the
+    /// install id, because that is what `purchaseToken` gives Apple — otherwise the
+    /// sale arrives with a key no answer was ever filed under.
+    func testTheInstallIdIsUsedWhenTheAppHasNoUserId() throws {
+        Attribura._setTestSession(mockSession())
+
+        let exp = expectation(description: "request uses the install id")
+        var captured: URLRequest?
+        MockURLProtocol.onRequest = { req in
+            captured = req
+            exp.fulfill()
+        }
+
+        Attribura.configure(token: "tok_test",
+                            baseURL: URL(string: "https://api.example.com")!)
+        Attribura.reportSource(.tiktok)
+
+        wait(for: [exp], timeout: 2)
+
+        let body = try JSONSerialization.jsonObject(
+            with: try XCTUnwrap(captured?.httpBody)) as? [String: Any]
+        XCTAssertEqual(body?["user_id"] as? String, Attribura.purchaseToken.uuidString)
+    }
 }

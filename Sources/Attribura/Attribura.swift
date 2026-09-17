@@ -29,7 +29,7 @@ import Foundation
 /// webhooks use — from **Settings → Integrations → Attribura SDK** in the dashboard.
 public enum Attribura {
     /// SDK version, sent with every event (for support/debugging).
-    public static let version = "0.3.1"
+    public static let version = "0.3.2"
 
     static let lock = NSLock()
     static var client: IngestClient?
@@ -123,10 +123,12 @@ public enum Attribura {
     /// Steps are written to disk immediately and sent coalesced a couple of seconds
     /// later, so an app killed mid-onboarding still reports every step it reached.
     public static func step(_ name: String) {
+        // Read before taking the lock: `anonymousId` takes it too.
+        let installId = anonymousId
         lock.lock()
         let client = self.client
         let steps = onboarding
-        let uid = defaultUserId
+        let uid = defaultUserId ?? installId
         if runId == nil { runId = UUID().uuidString }
         let run = runId!
         lastStep = name
@@ -170,16 +172,20 @@ public enum Attribura {
     ///
     /// - Parameters:
     ///   - source: the answer the user selected.
-    ///   - userId: the app user id; falls back to the id given to `configure`/`setUserId`.
+    ///   - userId: the app user id; falls back to the id given to `configure`/`setUserId`,
+    ///     then to `anonymousId` — the same id `purchaseToken` hands Apple, so a sale
+    ///     finds the answer that came before it.
     ///   - prompt: the exact question you showed, kept for auditing (optional).
     ///   - context: any extra key/values you want stored (locale, app version, …).
     public static func reportSource(_ source: AttributionSource,
                                     userId: String? = nil,
                                     prompt: String? = nil,
                                     context: [String: String]? = nil) {
+        // Read before taking the lock: `anonymousId` takes it too.
+        let installId = anonymousId
         lock.lock()
         let client = self.client
-        let uid = userId ?? defaultUserId
+        let uid = userId ?? defaultUserId ?? installId
         // The answer joins the funnel through the run, so a run is minted here too
         // when `step` was never called — harmless for apps that only self-report.
         if runId == nil { runId = UUID().uuidString }
