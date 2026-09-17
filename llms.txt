@@ -60,12 +60,22 @@ Attribura.step(_ name: String)
 
 // Start reporting purchases. Call once, right after configure. iOS 15+.
 // Sends every StoreKit transaction exactly as Apple signed it; the server checks that
-// signature against Apple's root before anything counts. Never calls finish().
+// signature against Apple's root before anything counts. Never calls finish(). Reports
+// renewals, refunds, Ask to Buy, offer codes and purchases made on another device — not
+// a purchase made in this app, which is what Attribura.purchase(_:) is for.
 Attribura.observePurchases()
 
-// This install's anonymous id, and the same value as a UUID for StoreKit. Minted by the
-// SDK (NOT identifierForVendor — that would make your app declare a Device ID), stored
-// in a file in Application Support, gone when the app is deleted.
+// Buy a product, tied to this install, and report the sale the moment it succeeds. Use
+// in place of product.purchase(options:) — same return type, so your switch is
+// unchanged. iOS 15+. Never calls finish(); your app still delivers.
+Attribura.purchase(_ product: Product,
+                   options: Set<Product.PurchaseOption> = []) async throws
+    -> Product.PurchaseResult
+
+// This install's anonymous id, and the same value as a UUID — the one Attribura.purchase
+// attaches to a sale automatically. Minted by the SDK (NOT identifierForVendor — that
+// would make your app declare a Device ID), stored in a file in Application Support,
+// gone when the app is deleted.
 Attribura.anonymousId: String
 Attribura.purchaseToken: UUID
 
@@ -74,7 +84,8 @@ Attribura.purchaseToken: UUID
 Attribura.newRun()
 
 // Report where a user heard about you. Fire-and-forget; safe on the main thread.
-// No-op (asserts in debug) if called before configure.
+// No-op (asserts in debug) if called before configure. No userId given? Filed under
+// anonymousId — the same id a purchase carries.
 Attribura.reportSource(_ source: AttributionSource,
                        userId: String? = nil,
                        prompt: String? = nil,
@@ -109,19 +120,22 @@ Attribura.configure(
    configure in App Store Connect:
 
 ```swift
-Attribura.observePurchases()                       // once, right after configure
+Attribura.observePurchases()                          // once, right after configure
 
-let result = try await product.purchase(           // on every purchase
-    options: [.appAccountToken(Attribura.purchaseToken)]
-)
+let result = try await Attribura.purchase(product)    // instead of product.purchase(...)
 ```
 
-   The `appAccountToken` is the whole trick: Apple stores it on the transaction and
-   signs it, so the sale arrives already tied to the id that answered the question.
-   Omit it and the sale is still recorded but belongs to nobody.
+   `Attribura.purchase` adds the id that answered the question, calls
+   `product.purchase`, and reports the sale the moment it succeeds — `result` is the
+   same `Product.PurchaseResult`, so your `switch` doesn't change.
+
+   A plain `product.purchase()` is not seen by the SDK: Apple hands a purchase made in
+   the app back through its own result, not through `observePurchases()`'s stream.
 
    Sandbox purchases are welcome — real signatures on fake money, kept apart so no
    revenue figure counts them. Use them to prove the chain before you ship.
+   A purchase made against an Xcode StoreKit configuration file is signed by Xcode,
+   not Apple, and is refused: set the scheme's StoreKit Configuration to None first.
 
    You do NOT have to unplug Superwall or Stripe first. Once an app reports Apple's own
    transactions, those are the ones that count, and the webhook stops crediting the same
@@ -296,9 +310,9 @@ Since you pass the user id, keep your own privacy policy consistent with what yo
 
 - Call `configure` once, as early as possible; it's cheap and flushes buffered answers.
 - Ask the question ONCE per user, early in onboarding, before the paywall.
-- Call `observePurchases()` and pass `.appAccountToken(Attribura.purchaseToken)` on every
-  purchase — that pair is what turns an answer into attributed revenue, with no account
-  and no permission prompt.
+- Call `observePurchases()` once, and buy through `Attribura.purchase(product)` instead
+  of `product.purchase(...)` — that pair is what turns an answer into attributed
+  revenue, with no account and no permission prompt.
 - If you also use Superwall or Stripe, pass the id THEY report via `setUserId` so both
   sides line up — and send purchases through one path only.
 - Keep your own answer labels close to the enum cases; use `.other("…")` for the rest.

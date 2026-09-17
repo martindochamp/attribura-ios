@@ -21,7 +21,7 @@ In Xcode: **File → Add Package Dependencies…** and paste
 `https://github.com/martindochamp/attribura-ios`, or add it to your `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/martindochamp/attribura-ios", from: "0.3.0")
+.package(url: "https://github.com/martindochamp/attribura-ios", from: "0.3.3")
 ```
 
 ## Setup
@@ -145,22 +145,25 @@ Two lines, and no configuration in App Store Connect at all.
 // once, right after configure:
 Attribura.observePurchases()
 
-// and on every purchase, so the sale knows whose it is:
-try await product.purchase(options: [.appAccountToken(Attribura.purchaseToken)])
+// and instead of product.purchase(...), so the sale knows whose it is:
+let result = try await Attribura.purchase(product)
 ```
 
-The second line is the one that matters. Apple stores that token on the transaction
-and signs it, so a purchase arrives already carrying the id that answered *"how did
-you hear about us"* — which is what lets the dashboard say a post earned $12 instead
-of just showing you $12.
+The second line is the one that matters. `Attribura.purchase` adds the id that
+answered *"how did you hear about us"*, buys through StoreKit, and reports the signed
+transaction the moment it succeeds — `result` is the same `Product.PurchaseResult`
+`product.purchase` would have returned, so the rest of your code doesn't change. Apple
+stores that id on the transaction and signs it, which is what lets the dashboard say a
+post earned $12 instead of just showing you $12.
+
+A plain `product.purchase()` is not seen by the SDK: Apple hands a purchase made in the
+app back through its own result, not through `observePurchases()`'s stream, so that
+sale never reaches Attribura and no post can be credited for it.
 
 Every transaction is forwarded **exactly as Apple signed it** and verified server-side
 against Apple's own root certificate before a cent is booked. The SDK never calls
 `finish()` on your transactions: only your app knows when it has delivered what was
 bought.
-
-Without `appAccountToken` the sale is still recorded — it simply belongs to nobody,
-and no post can be credited for it.
 
 **Sandbox purchases are welcome.** They are real signatures on fake money, stored
 apart so no total counts them, which is how you prove the whole chain works before
@@ -184,10 +187,10 @@ User taps "Instagram"  ──►  Attribura.reportSource(.instagram, userId:)
 The purchase reaches the same key straight from Apple, with nobody in between:
 
 ```
-product.purchase(options: [.appAccountToken(Attribura.purchaseToken)])
-                                     │  Apple signs the transaction, token included
+Attribura.purchase(product)
+                                     │  Apple signs the transaction, id included
                                      ▼
-Attribura.observePurchases()  ──►  POST /v1/ingest/storekit
+                             POST /v1/ingest/storekit
                                      │  signature checked against Apple Root CA - G3
                                      ▼
         the amount joins the self-report on that same id, and the post gets credited
