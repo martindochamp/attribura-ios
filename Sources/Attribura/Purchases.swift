@@ -111,17 +111,18 @@ extension Attribura {
     /// bother inspecting `VerificationResult` first: a receipt this app judged for
     /// itself would still have to be judged again.
     ///
-    /// It reports one stream: `Transaction.updates` — every purchase made from now
-    /// on, plus renewals and refunds Apple issues while the app is closed, which
-    /// arrive at the next launch.
+    /// It reports `Transaction.updates`: renewals, refunds, Ask to Buy approvals,
+    /// offer codes and purchases made on another device — what happens outside this
+    /// app's own purchase call. A purchase made HERE never comes through that
+    /// stream (Apple hands it back through `purchase`'s result instead), which is
+    /// why `Attribura.purchase(_:)` exists: it reports that one the moment it
+    /// succeeds.
     ///
-    /// # Why it does not also replay what the person already owns
+    /// # Why it does not replay what the person already owns
     ///
     /// A purchase made before this SDK existed carries no `appAccountToken`, so it
     /// can never be tied to a source — replaying it would only announce an old sale
-    /// as a new one. The "network came back" case doesn't need a catch-up pass
-    /// either: the on-disk retry queue and `Transaction.updates` itself (which
-    /// redelivers unfinished transactions at launch) already cover it.
+    /// as a new one.
     ///
     /// # It never calls `finish()`
     ///
@@ -144,6 +145,33 @@ extension Attribura {
         lock.lock()
         purchaseTask = task
         lock.unlock()
+    }
+
+    /// Buy a product, tied to this install, and report the sale as it happens.
+    ///
+    /// ```swift
+    /// let result = try await Attribura.purchase(product)
+    /// switch result { … }   // exactly what `product.purchase()` returns
+    /// ```
+    ///
+    /// Use it in place of `product.purchase(options:)`. It adds the
+    /// `appAccountToken` that ties the sale to the answer this install gave, then
+    /// forwards the signed transaction on success. Both halves matter: StoreKit
+    /// returns an in-app purchase through this result and NOT through
+    /// `Transaction.updates`, so a purchase made with plain `product.purchase()` is
+    /// never seen by `observePurchases()`.
+    ///
+    /// Like the observer, it never calls `finish()`: your code still delivers.
+    /// Don't put your own `appAccountToken` in `options`.
+    public static func purchase(_ product: Product,
+                                options: Set<Product.PurchaseOption> = []) async throws -> Product.PurchaseResult {
+        var options = options
+        options.insert(.appAccountToken(purchaseToken))
+        let result = try await product.purchase(options: options)
+        if case .success(let verification) = result {
+            report([verification.jwsRepresentation])
+        }
+        return result
     }
 
     /// Stop reporting. Only the test target needs this — an app observes for its
