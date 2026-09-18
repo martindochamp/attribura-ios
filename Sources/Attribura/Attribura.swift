@@ -29,7 +29,7 @@ import Foundation
 /// webhooks use — from **Settings → Integrations → Attribura SDK** in the dashboard.
 public enum Attribura {
     /// SDK version, sent with every event (for support/debugging).
-    public static let version = "0.4.0"
+    public static let version = "0.5.0"
 
     static let lock = NSLock()
     static var client: IngestClient?
@@ -42,6 +42,8 @@ public enum Attribura {
     /// The ordered step names this app declared. The server resolves each step's
     /// position from this list, so it is the single source of funnel order.
     private static var onboarding: [String] = []
+    /// The key actions this app declared. See `action(_:)`.
+    static var actions: [String] = []
     /// The current onboarding run.
     ///
     /// Minted lazily, held **in memory only**, and deliberately not persisted. An
@@ -69,16 +71,22 @@ public enum Attribura {
     ///   appear**. Declaring the shape here rather than in a dashboard means the
     ///   order is authoritative and a step nobody reaches shows a real zero instead
     ///   of vanishing from the funnel. Omit it if you are not tracking steps.
+    /// - Parameter actions: the few moments your app exists for — "meal_logged",
+    ///   "audio_started" — at most 8. Report one with `action(_:)`. Declared here
+    ///   for the same reason as the steps: a name outside the list is reported
+    ///   back as undeclared, and one nobody does shows a real zero.
     public static func configure(token: String,
                                  baseURL: URL,
                                  userId: String? = nil,
-                                 onboarding: [String] = []) {
+                                 onboarding: [String] = [],
+                                 actions: [String] = []) {
         lock.lock()
         let session = sessionOverride ?? .shared
         let client = IngestClient(token: token, baseURL: baseURL, session: session)
         self.client = client
         self.defaultUserId = userId
         self.onboarding = onboarding
+        self.actions = actions
         lock.unlock()
         client.flush()
         // Retention needs nothing from the app: being configured IS the open.
@@ -234,8 +242,10 @@ public enum Attribura {
         runId = nil
         lastStep = nil
         onboarding = []
+        actions = []
         _anonymousId = nil
         _lastOpenDay = nil
+        _actionDays = nil
         lock.unlock()
         IngestClient._clearQueuesForTesting()
     }

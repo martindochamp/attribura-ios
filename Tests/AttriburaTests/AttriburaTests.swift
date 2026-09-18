@@ -208,6 +208,48 @@ final class AttriburaTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(captured).url?.path, "/v1/ingest/app_open")
     }
 
+    // MARK: - key actions
+
+    /// Two actions a second apart are one request, a repeat of the same action in
+    /// the same day is nothing, and the open tells the server what was declared.
+    func testActionsAreSentOncePerDayInOneRequest() throws {
+        Attribura._setTestSession(mockSession())
+        MockURLProtocol.announcesOpens = true
+
+        let sent = expectation(description: "open + one actions request")
+        sent.expectedFulfillmentCount = 2
+        var bodies: [String: [String: Any]] = [:]
+        var requests = 0
+        MockURLProtocol.onRequest = { req in
+            requests += 1
+            if let data = req.httpBody,
+               let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                bodies[req.url?.path ?? ""] = body
+            }
+            sent.fulfill()
+        }
+
+        Attribura.configure(token: "tok_test", baseURL: URL(string: "https://api.example.com")!,
+                            actions: ["meal_logged", "scan_done"])
+        Attribura.action("meal_logged")
+        Attribura.action("scan_done")
+        Attribura.action("meal_logged")
+        wait(for: [sent], timeout: 6)
+
+        let quiet = expectation(description: "nothing else follows")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { quiet.fulfill() }
+        wait(for: [quiet], timeout: 4)
+        XCTAssertEqual(requests, 2)
+
+        XCTAssertEqual(bodies["/v1/ingest/app_open"]?["actions"] as? [String],
+                       ["meal_logged", "scan_done"])
+        let batch = try XCTUnwrap(bodies["/v1/ingest/actions"])
+        XCTAssertEqual(batch["install_id"] as? String, Attribura.anonymousId)
+        XCTAssertEqual(batch["declared"] as? [String], ["meal_logged", "scan_done"])
+        let names = (batch["actions"] as? [[String: Any]])?.compactMap { $0["name"] as? String }
+        XCTAssertEqual(names, ["meal_logged", "scan_done"])
+    }
+
     /// The queue file of 0.3.x has no `opens` key. It must still decode — what is
     /// waiting in it may be a sale.
     func testAQueueWrittenBeforeOpensExistedIsStillRead() throws {

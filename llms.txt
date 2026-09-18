@@ -32,10 +32,10 @@ Requirements: iOS 13+, Swift 5.9+.
 ## Install (Swift Package Manager)
 
 Xcode → File → Add Package Dependencies… → `https://github.com/martindochamp/attribura-ios`
-(Up to Next Major Version, from 0.4.0). Or in Package.swift:
+(Up to Next Major Version, from 0.5.0). Or in Package.swift:
 
 ```swift
-.package(url: "https://github.com/martindochamp/attribura-ios", from: "0.4.0")
+.package(url: "https://github.com/martindochamp/attribura-ios", from: "0.5.0")
 ```
 
 Then add `"Attribura"` to your target's dependencies and `import Attribura`.
@@ -96,6 +96,18 @@ Retention needs no call: from 0.4.0 `configure` reports one `app_open` per insta
 UTC day by itself, and again when the app returns to the foreground on a later day.
 `Attribura.reportOpen()` is public only for platforms that post no foreground
 notification; a second call in the same day sends nothing. Do NOT add it to an iOS app.
+
+Key actions (0.5.0+): declare the few moments the app exists for — at most 8 — and
+report each where it happens. Call it every time with no guard; only the first of a UTC
+day is sent. A name outside the declared list is never sent and asserts in debug.
+
+```swift
+Attribura.configure(token: "…", baseURL: …, actions: ["meal_logged", "scan_done"])
+Attribura.action("meal_logged")   // wherever the meal is saved
+```
+
+Pick actions that ARE the app's value (a meal logged, an audio started), not navigation
+(a tab opened). This is not an event stream: no properties, no counts.
 
 ### AttributionSource (enum)
 
@@ -266,6 +278,24 @@ Only `install_id` (a UUID) is required. `installed_at` is the creation date of t
 data container: the server uses it to keep an install that predates the SDK out of the
 cohort of the day it updated. The dashboard reads it back as D1 / D7 / D28 per install
 cohort, split by self-reported channel (`GET /v1/retention`).
+
+### Key actions
+
+Batched to `{baseURL}/v1/ingest/actions`, one install per request:
+
+```bash
+curl -X POST "https://api.attribura.com/v1/ingest/actions" \
+  -H "X-Attribura-Token: atb_ingest_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{"install_id": "5C1F…-UUID", "declared": ["meal_logged", "scan_done"],
+       "platform": "ios", "sdk_version": "0.5.0",
+       "actions": [{"name": "meal_logged", "occurred_at": "2026-09-18T10:00:00Z"}]}'
+```
+
+Answers `{"ok": true, "recorded": 1, "undeclared": []}`. A name not in `declared` is not
+stored and comes back in `undeclared`. The dashboard then measures retention on the
+action (`GET /v1/retention?action=meal_logged`) and adds activation: the share of a
+cohort that did it the day they installed, and within their first week, per channel.
 
 ### Purchases
 

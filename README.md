@@ -24,7 +24,7 @@ In Xcode: **File → Add Package Dependencies…** and paste
 `https://github.com/martindochamp/attribura-ios`, or add it to your `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/martindochamp/attribura-ios", from: "0.4.0")
+.package(url: "https://github.com/martindochamp/attribura-ios", from: "0.5.0")
 ```
 
 ## Setup
@@ -155,6 +155,25 @@ created, and the server only cohorts installs it saw from the start.
 
 `Attribura.reportOpen()` is public for platforms that post no foreground notification.
 Calling it more than once a day sends nothing.
+
+## Key actions (one line each)
+
+Opening an app is a weak sign of life. Name the few moments your app exists for, at
+most 8, and report them where they happen:
+
+```swift
+Attribura.configure(token: "…", baseURL: …, actions: ["meal_logged", "scan_done"])
+
+// wherever the meal is saved:
+Attribura.action("meal_logged")
+```
+
+Call it every time, without a guard: like an open, only the first of a UTC day is sent.
+The dashboard can then measure retention on the action instead of the open, and adds
+**activation**: the share of a cohort that did it the day they installed, and within
+their first week, split by the channel they came from. This is deliberately not an event
+stream: no properties, no counts. A name outside the declared list is never sent (and
+asserts in debug builds).
 
 ## Report the money (recommended)
 

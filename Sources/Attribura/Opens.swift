@@ -37,6 +37,7 @@ extension Attribura {
         lock.lock()
         let client = self.client
         let uid = defaultUserId
+        let declared = actions
         if _lastOpenDay == nil {
             _lastOpenDay = (try? String(contentsOf: identityFile("last-open-day"), encoding: .utf8))?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -63,7 +64,75 @@ extension Attribura {
             user_id: uid,
             app_version: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String,
             platform: "ios",
-            sdk_version: version
+            sdk_version: version,
+            actions: declared.isEmpty ? nil : declared
+        ))
+    }
+
+    /// The last UTC day each action was recorded, memoised from its file.
+    static var _actionDays: [String: String]?
+
+    /// Report that this install did one of its key actions.
+    ///
+    /// ```swift
+    /// Attribura.configure(token: "…", baseURL: …, actions: ["meal_logged"])
+    /// // wherever the meal is saved:
+    /// Attribura.action("meal_logged")
+    /// ```
+    ///
+    /// Opening an app is a weak sign of life. This is the strong one: the moment
+    /// the app exists for. The dashboard measures activation and retention on it,
+    /// split by the channel the install came from.
+    ///
+    /// Call it every time the action happens — no need to guard it. Like an open,
+    /// only the first of a UTC day is sent; the question is whether, not how
+    /// many. The name must be one you passed to `configure(actions:)`.
+    public static func action(_ name: String) {
+        let now = Date()
+        let today = String(iso8601(now).prefix(10))
+        // Read before taking the lock: `anonymousId` takes it too.
+        let installId = anonymousId
+
+        lock.lock()
+        let client = self.client
+        let uid = defaultUserId
+        let declared = actions
+        if _actionDays == nil {
+            _actionDays = (try? Data(contentsOf: identityFile("action-days")))
+                .flatMap { try? JSONDecoder().decode([String: String].self, from: $0) } ?? [:]
+        }
+        let known = declared.contains(name)
+        let alreadyReported = _actionDays?[name] == today
+        var days: [String: String]?
+        if client != nil && known && !alreadyReported {
+            // Only declared names are kept, so the file cannot outgrow the list.
+            _actionDays = (_actionDays ?? [:]).filter { declared.contains($0.key) }
+            _actionDays?[name] = today
+            days = _actionDays
+        }
+        lock.unlock()
+
+        guard let client = client else {
+            assertionFailure("Attribura.action called before Attribura.configure(token:baseURL:)")
+            return
+        }
+        guard known else {
+            assertionFailure("Attribura.action(\"\(name)\") is not in configure(actions:)")
+            return
+        }
+        guard let days = days else { return }
+
+        if let data = try? JSONEncoder().encode(days) {
+            try? data.write(to: identityFile("action-days"), options: .atomic)
+        }
+        client.enqueueAction(IngestClient.ActionBatch(
+            install_id: installId,
+            declared: declared,
+            user_id: uid,
+            app_version: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String,
+            platform: "ios",
+            sdk_version: version,
+            actions: [IngestClient.Action(name: name, occurred_at: iso8601(now))]
         ))
     }
 

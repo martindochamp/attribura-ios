@@ -66,6 +66,26 @@ final class IngestClient {
         let app_version: String?
         let platform: String
         let sdk_version: String
+        /// The key actions this build declared, so the dashboard can show one
+        /// nobody has done yet as a real zero.
+        let actions: [String]?
+    }
+
+    /// One key action inside a batch.
+    struct Action: Codable {
+        let name: String
+        let occurred_at: String
+    }
+
+    /// The body for `POST /v1/ingest/actions` — always one install per request.
+    struct ActionBatch: Codable {
+        let install_id: String
+        let declared: [String]
+        var user_id: String?
+        let app_version: String?
+        let platform: String
+        let sdk_version: String
+        var actions: [Action]
     }
 
     /// What survives a launch. Typed lists rather than one opaque blob, because
@@ -81,6 +101,7 @@ final class IngestClient {
         /// Days this install opened the app that the server has not heard of yet.
         /// A day spent offline is still a day the user came back.
         var opens: [Open] = []
+        var actions: [ActionBatch] = []
 
         init() {}
 
@@ -94,10 +115,12 @@ final class IngestClient {
             steps = try c.decodeIfPresent([StepBatch].self, forKey: .steps) ?? []
             transactions = try c.decodeIfPresent([String].self, forKey: .transactions) ?? []
             opens = try c.decodeIfPresent([Open].self, forKey: .opens) ?? []
+            actions = try c.decodeIfPresent([ActionBatch].self, forKey: .actions) ?? []
         }
 
         var isEmpty: Bool {
             selfReports.isEmpty && steps.isEmpty && transactions.isEmpty && opens.isEmpty
+                && actions.isEmpty
         }
     }
 
@@ -191,6 +214,18 @@ final class IngestClient {
         scheduleFlush()
     }
 
+    /// Record one key action. Persisted first and sent on the debounce, exactly
+    /// like a step: two actions a second apart are one request.
+    func enqueueAction(_ batch: ActionBatch) {
+        mutateQueue { q in
+            q.actions.append(batch)
+            if q.actions.count > self.maxQueued {
+                q.actions.removeFirst(q.actions.count - self.maxQueued)
+            }
+        }
+        scheduleFlush()
+    }
+
     /// Record one onboarding step.
     ///
     /// Persisted FIRST, sent on a short debounce. That order is deliberate: if the
@@ -242,6 +277,22 @@ final class IngestClient {
                     q.opens.append(open)
                     if q.opens.count > self.maxQueued {
                         q.opens.removeFirst(q.opens.count - self.maxQueued)
+                    }
+                }
+            }
+        }
+
+        // One install per device, so every waiting action is one request. The
+        // newest batch wins the header fields: it knows the latest user id.
+        if var merged = pending.actions.last {
+            merged.actions = pending.actions.flatMap { $0.actions }
+            let batch = merged
+            post("v1/ingest/actions", batch) { [weak self] ok in
+                guard let self = self, !ok else { return }
+                self.mutateQueue { q in
+                    q.actions.append(batch)
+                    if q.actions.count > self.maxQueued {
+                        q.actions.removeFirst(q.actions.count - self.maxQueued)
                     }
                 }
             }
