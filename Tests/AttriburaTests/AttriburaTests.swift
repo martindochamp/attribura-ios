@@ -10,8 +10,14 @@ final class MockURLProtocol: URLProtocol {
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
+    /// `configure` reports an open by itself. Every test that is not about opens
+    /// counts or captures "the request", so the open is answered and not announced.
+    static var announcesOpens = false
+
     override func startLoading() {
-        MockURLProtocol.onRequest?(Self.materialize(request))
+        if MockURLProtocol.announcesOpens || request.url?.path != "/v1/ingest/app_open" {
+            MockURLProtocol.onRequest?(Self.materialize(request))
+        }
         let response = HTTPURLResponse(url: request.url!,
                                        statusCode: MockURLProtocol.statusCode,
                                        httpVersion: nil,
@@ -69,8 +75,10 @@ final class AttriburaTests: XCTestCase {
     override func tearDown() {
         MockURLProtocol.onRequest = nil
         MockURLProtocol.statusCode = 200
+        MockURLProtocol.announcesOpens = false
         Attribura._setTestSession(nil)
         Attribura._identityDirectoryOverride = nil
+        Attribura._installedAtOverride = nil
         if let dir = identityDir { try? FileManager.default.removeItem(at: dir) }
         super.tearDown()
     }
@@ -108,6 +116,119 @@ final class AttriburaTests: XCTestCase {
         Attribura._setTestSession(nil)
 
         XCTAssertNotEqual(Attribura.anonymousId, first)
+    }
+
+    // MARK: - opens
+
+    /// The whole retention feature from the app's side: configure, and nothing else.
+    func testConfigureReportsTheOpenByItself() throws {
+        Attribura._setTestSession(mockSession())
+        MockURLProtocol.announcesOpens = true
+        let installed = Date(timeIntervalSince1970: 1_780_000_000)
+        Attribura._installedAtOverride = installed
+
+        let exp = expectation(description: "app_open sent")
+        var captured: URLRequest?
+        MockURLProtocol.onRequest = { req in
+            captured = req
+            exp.fulfill()
+        }
+        Attribura.configure(token: "tok_test", baseURL: URL(string: "https://api.example.com")!,
+                            userId: "user-7")
+        wait(for: [exp], timeout: 5)
+
+        let req = try XCTUnwrap(captured)
+        XCTAssertEqual(req.url?.path, "/v1/ingest/app_open")
+        XCTAssertEqual(req.value(forHTTPHeaderField: "X-Attribura-Token"), "tok_test")
+        let body = try JSONSerialization.jsonObject(with: try XCTUnwrap(req.httpBody)) as? [String: Any]
+        XCTAssertEqual(body?["install_id"] as? String, Attribura.anonymousId,
+                       "the cohort key is the id a purchase and an answer already carry")
+        XCTAssertEqual(body?["installed_at"] as? String, ISO8601DateFormatter().string(from: installed))
+        XCTAssertEqual(body?["user_id"] as? String, "user-7")
+        XCTAssertEqual(body?["sdk_version"] as? String, Attribura.version)
+        XCTAssertNotNil(body?["occurred_at"] as? String)
+    }
+
+    /// Retention asks "was this install here today", so the second open of a day —
+    /// another call, a foreground, or a whole relaunch — sends nothing.
+    func testAnOpenIsReportedOncePerDay() {
+        Attribura._setTestSession(mockSession())
+        MockURLProtocol.announcesOpens = true
+
+        let first = expectation(description: "the day's first open")
+        let again = expectation(description: "no second open")
+        again.isInverted = true
+        var seen = 0
+        MockURLProtocol.onRequest = { _ in
+            seen += 1
+            if seen == 1 { first.fulfill() } else { again.fulfill() }
+        }
+
+        let base = URL(string: "https://api.example.com")!
+        Attribura.configure(token: "tok_test", baseURL: base)
+        Attribura.reportOpen()
+        NotificationCenter.default.post(
+            name: Notification.Name("UIApplicationDidBecomeActiveNotification"), object: nil)
+        wait(for: [first], timeout: 5)
+
+        // A relaunch: the memo is gone, the file beside the install id is not.
+        let session = mockSession()
+        Attribura._setTestSession(session)
+        Attribura._identityDirectoryOverride = identityDir
+        Attribura.configure(token: "tok_test", baseURL: base)
+        wait(for: [again], timeout: 3)
+    }
+
+    /// A day spent offline is still a day the user came back: the open waits on
+    /// disk and goes out at the next launch, carrying the day it happened.
+    func testAnOpenRefusedByTheServerIsRetried() throws {
+        Attribura._setTestSession(mockSession())
+        MockURLProtocol.announcesOpens = true
+        MockURLProtocol.statusCode = 503
+
+        let failed = expectation(description: "first attempt refused")
+        MockURLProtocol.onRequest = { _ in failed.fulfill() }
+        let base = URL(string: "https://api.example.com")!
+        Attribura.configure(token: "tok_test", baseURL: base)
+        wait(for: [failed], timeout: 5)
+
+        let queued = expectation(description: "the refused open reaches the queue")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { queued.fulfill() }
+        wait(for: [queued], timeout: 2)
+
+        MockURLProtocol.statusCode = 200
+        let retried = expectation(description: "the open is sent again")
+        var captured: URLRequest?
+        MockURLProtocol.onRequest = { req in
+            captured = req
+            retried.fulfill()
+        }
+        Attribura.configure(token: "tok_test", baseURL: base)
+        wait(for: [retried], timeout: 5)
+        XCTAssertEqual(try XCTUnwrap(captured).url?.path, "/v1/ingest/app_open")
+    }
+
+    /// The queue file of 0.3.x has no `opens` key. It must still decode — what is
+    /// waiting in it may be a sale.
+    func testAQueueWrittenBeforeOpensExistedIsStillRead() throws {
+        Attribura._setTestSession(mockSession())
+        let dir = try XCTUnwrap(IngestClient._queueDirectoryOverride)
+        let old = #"{"selfReports":[],"steps":[],"transactions":["jws.old.sig"]}"#
+        try Data(old.utf8).write(to: dir.appendingPathComponent("attribura-queue-v2.json"))
+
+        let sent = expectation(description: "the old sale goes out")
+        var captured: URLRequest?
+        MockURLProtocol.onRequest = { req in
+            captured = req
+            sent.fulfill()
+        }
+        Attribura.configure(token: "tok_test", baseURL: URL(string: "https://api.example.com")!)
+        wait(for: [sent], timeout: 5)
+
+        let req = try XCTUnwrap(captured)
+        XCTAssertEqual(req.url?.path, "/v1/ingest/storekit")
+        let body = try JSONSerialization.jsonObject(with: try XCTUnwrap(req.httpBody)) as? [String: Any]
+        XCTAssertEqual(body?["signed_transactions"] as? [String], ["jws.old.sig"])
     }
 
     // MARK: - purchases

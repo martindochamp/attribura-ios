@@ -29,7 +29,7 @@ import Foundation
 /// webhooks use — from **Settings → Integrations → Attribura SDK** in the dashboard.
 public enum Attribura {
     /// SDK version, sent with every event (for support/debugging).
-    public static let version = "0.3.3"
+    public static let version = "0.4.0"
 
     static let lock = NSLock()
     static var client: IngestClient?
@@ -37,7 +37,7 @@ public enum Attribura {
     static var _anonymousId: String?
     /// Test-only: where the install id is written. See `Purchases.swift`.
     static var _identityDirectoryOverride: URL?
-    private static var defaultUserId: String?
+    static var defaultUserId: String?
     private static var sessionOverride: URLSession?
     /// The ordered step names this app declared. The server resolves each step's
     /// position from this list, so it is the single source of funnel order.
@@ -62,7 +62,8 @@ public enum Attribura {
 
     /// Configure the SDK once, as early as possible (e.g. in `application(_:didFinishLaunching…)`
     /// or your App's `init`). Passing `userId` here lets later calls omit it.
-    /// Calling `configure` also flushes any events buffered from a previous launch.
+    /// Calling `configure` also flushes any events buffered from a previous launch,
+    /// and reports that the app was opened today — see `reportOpen()`.
     ///
     /// - Parameter onboarding: your onboarding step names, **in the order they
     ///   appear**. Declaring the shape here rather than in a dashboard means the
@@ -80,6 +81,9 @@ public enum Attribura {
         self.onboarding = onboarding
         lock.unlock()
         client.flush()
+        // Retention needs nothing from the app: being configured IS the open.
+        reportOpen()
+        observeForeground()
     }
 
     /// Set (or update) the user id used when a call doesn't pass one — e.g. once you
@@ -216,7 +220,7 @@ public enum Attribura {
 
     /// One formatter per call is wasteful, but `ISO8601DateFormatter` is not
     /// documented as thread-safe and these calls come off arbitrary threads.
-    private static func iso8601(_ date: Date) -> String {
+    static func iso8601(_ date: Date) -> String {
         ISO8601DateFormatter().string(from: date)
     }
 
@@ -231,6 +235,7 @@ public enum Attribura {
         lastStep = nil
         onboarding = []
         _anonymousId = nil
+        _lastOpenDay = nil
         lock.unlock()
         IngestClient._clearQueuesForTesting()
     }

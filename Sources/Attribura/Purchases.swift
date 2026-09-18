@@ -77,9 +77,12 @@ extension Attribura {
     /// Application Support rather than Caches: the system may evict a caches
     /// directory whenever it likes, and an id that disappears under memory pressure
     /// would silently split one person into several.
-    private static func anonymousIdURL() -> URL {
+    private static func anonymousIdURL() -> URL { identityFile("install-id") }
+
+    /// A file that lives and dies with this install, beside the install id.
+    static func identityFile(_ name: String) -> URL {
         if let override = _identityDirectoryOverride {
-            return override.appendingPathComponent("attribura-install-id")
+            return override.appendingPathComponent("attribura-\(name)")
         }
         let base = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask).first
@@ -87,7 +90,7 @@ extension Attribura {
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
         return base
             .appendingPathComponent("Attribura", isDirectory: true)
-            .appendingPathComponent("install-id")
+            .appendingPathComponent(name)
     }
 }
 

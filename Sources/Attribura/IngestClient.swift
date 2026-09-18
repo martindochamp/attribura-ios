@@ -54,6 +54,20 @@ final class IngestClient {
         let signed_transactions: [String]
     }
 
+    /// The body for `POST /v1/ingest/app_open` — "this install opened the app
+    /// today". One per install per UTC day; see `Attribura.reportOpen()`.
+    struct Open: Codable {
+        let install_id: String
+        let occurred_at: String
+        /// When the app's container was created. What lets the server keep an
+        /// install that is months old out of the cohort of the day it updated.
+        let installed_at: String?
+        let user_id: String?
+        let app_version: String?
+        let platform: String
+        let sdk_version: String
+    }
+
     /// What survives a launch. Typed lists rather than one opaque blob, because
     /// flushing has to MERGE step batches (see `flush`) and cannot do that to bytes.
     private struct Queue: Codable {
@@ -64,6 +78,27 @@ final class IngestClient {
         /// at the next launch, so a request lost to a dead network loses the sale
         /// permanently unless it is on disk.
         var transactions: [String] = []
+        /// Days this install opened the app that the server has not heard of yet.
+        /// A day spent offline is still a day the user came back.
+        var opens: [Open] = []
+
+        init() {}
+
+        /// Every list is read with `decodeIfPresent`. The synthesized decoder
+        /// throws on a missing key, so the queue written by the version BEFORE a
+        /// list was added failed to decode and was dropped whole on upgrade —
+        /// taking whatever sale or answer was waiting in it.
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            selfReports = try c.decodeIfPresent([Event].self, forKey: .selfReports) ?? []
+            steps = try c.decodeIfPresent([StepBatch].self, forKey: .steps) ?? []
+            transactions = try c.decodeIfPresent([String].self, forKey: .transactions) ?? []
+            opens = try c.decodeIfPresent([Open].self, forKey: .opens) ?? []
+        }
+
+        var isEmpty: Bool {
+            selfReports.isEmpty && steps.isEmpty && transactions.isEmpty && opens.isEmpty
+        }
     }
 
     // MARK: - state
@@ -141,6 +176,21 @@ final class IngestClient {
         }
     }
 
+    /// Record that the app was opened today.
+    ///
+    /// Persisted first, like a step, and for the same reason: the app may be
+    /// killed — or simply offline — before the request lands, and the day still
+    /// happened. It goes out with the next drain.
+    func enqueueOpen(_ open: Open) {
+        mutateQueue { q in
+            q.opens.append(open)
+            if q.opens.count > self.maxQueued {
+                q.opens.removeFirst(q.opens.count - self.maxQueued)
+            }
+        }
+        scheduleFlush()
+    }
+
     /// Record one onboarding step.
     ///
     /// Persisted FIRST, sent on a short debounce. That order is deliberate: if the
@@ -180,12 +230,22 @@ final class IngestClient {
     /// is re-queued by its own send path.
     private func drain() {
         let pending = loadQueue()
-        guard !pending.selfReports.isEmpty || !pending.steps.isEmpty
-                || !pending.transactions.isEmpty else { return }
+        guard !pending.isEmpty else { return }
         saveQueue(Queue())                       // optimistic clear; failures re-enqueue
 
         for event in pending.selfReports { send(event) }
         sendTransactions(pending.transactions)
+        for open in pending.opens {
+            post("v1/ingest/app_open", open) { [weak self] ok in
+                guard let self = self, !ok else { return }
+                self.mutateQueue { q in
+                    q.opens.append(open)
+                    if q.opens.count > self.maxQueued {
+                        q.opens.removeFirst(q.opens.count - self.maxQueued)
+                    }
+                }
+            }
+        }
 
         // Merge by run: same run, one request. Order is preserved so the oldest
         // run goes out first.
@@ -287,7 +347,7 @@ final class IngestClient {
         // Every list, not just the two that existed first: a queue holding only a
         // refused SALE looked empty here and had its file deleted, which threw the
         // sale away. Caught by testAFailedSaleIsRetriedOnTheNextFlush.
-        if q.selfReports.isEmpty && q.steps.isEmpty && q.transactions.isEmpty {
+        if q.isEmpty {
             try? FileManager.default.removeItem(at: queueURL)
             return
         }

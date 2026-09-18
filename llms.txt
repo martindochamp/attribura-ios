@@ -32,10 +32,10 @@ Requirements: iOS 13+, Swift 5.9+.
 ## Install (Swift Package Manager)
 
 Xcode → File → Add Package Dependencies… → `https://github.com/martindochamp/attribura-ios`
-(Up to Next Major Version, from 0.2.1). Or in Package.swift:
+(Up to Next Major Version, from 0.4.0). Or in Package.swift:
 
 ```swift
-.package(url: "https://github.com/martindochamp/attribura-ios", from: "0.2.1")
+.package(url: "https://github.com/martindochamp/attribura-ios", from: "0.4.0")
 ```
 
 Then add `"Attribura"` to your target's dependencies and `import Attribura`.
@@ -91,6 +91,11 @@ Attribura.reportSource(_ source: AttributionSource,
                        prompt: String? = nil,
                        context: [String: String]? = nil)
 ```
+
+Retention needs no call: from 0.4.0 `configure` reports one `app_open` per install per
+UTC day by itself, and again when the app returns to the foreground on a later day.
+`Attribura.reportOpen()` is public only for platforms that post no foreground
+notification; a second call in the same day sends nothing. Do NOT add it to an iOS app.
 
 ### AttributionSource (enum)
 
@@ -243,6 +248,25 @@ reports every step it reached. Resends are idempotent: a run records a given ste
 A step name you did not declare comes back in `undeclared` — a typo shows up here rather
 than as a funnel row that looks wrong weeks later.
 
+### App opens (retention)
+
+Sent by the SDK itself, to `{baseURL}/v1/ingest/app_open`, at most once per install per
+UTC day, through the same on-disk retry queue (a day spent offline is still reported):
+
+```bash
+curl -X POST "https://api.attribura.com/v1/ingest/app_open" \
+  -H "X-Attribura-Token: atb_ingest_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{"install_id": "5C1F…-UUID", "occurred_at": "2026-09-18T10:00:00Z",
+       "installed_at": "2026-09-01T09:12:00Z", "app_version": "1.4",
+       "platform": "ios", "sdk_version": "0.4.0"}'
+```
+
+Only `install_id` (a UUID) is required. `installed_at` is the creation date of the app's
+data container: the server uses it to keep an install that predates the SDK out of the
+cohort of the day it updated. The dashboard reads it back as D1 / D7 / D28 per install
+cohort, split by self-reported channel (`GET /v1/retention`).
+
 ### Purchases
 
 Transactions go to `{baseURL}/v1/ingest/storekit`, batched, as the JWS strings StoreKit
@@ -277,8 +301,9 @@ purchase that already carries a token is never overridden by a survey answer.
 
 ## Privacy & App Store
 
-The SDK sends only what you pass (the answer + the user id) plus a timestamp and its own
-version — no device identifiers, no advertising id (IDFA), nothing read back off the
+The SDK sends what you pass (the answer + the user id), a timestamp, its own version,
+and — for retention — the install id it minted, your app's version string and the date
+the app was installed. No device identifiers, no advertising id (IDFA), nothing about the
 device. It does **not** "track" in Apple's sense: it never links your users' data with
 third-party data for ad targeting and shares nothing with data brokers — so it triggers
 **no App Tracking Transparency (ATT) prompt**.
@@ -291,11 +316,13 @@ Two things to get right before you ship to the App Store:
    user*, *not used for tracking*, purpose **Analytics**; `NSPrivacyTracking` is `false`.
    Xcode aggregates this into your app's privacy report automatically — you don't copy or
    configure anything. The onboarding run id is held in memory for the life of the
-   process and never written to disk, which is why the manifest declares no
-   required-reason APIs.
+   process and never written to disk. The manifest declares ONE required-reason API:
+   **File Timestamp, reason C617.1**, used to read the creation date of the app's own
+   `Library` directory (the install date). Nothing for you to declare by hand.
 2. Reflect the same in **your app's** App Store privacy label (App Store Connect → App
    Privacy): a **User ID** and **Other Data**, used for **Analytics**, *linked to the
-   user*, *not* used for tracking — plus **Product Interaction** if you call `step`, and
+   user*, *not* used for tracking — plus **Product Interaction** (always, from 0.4.0: every app
+   reports its opens; before 0.4.0 only if you call `step`), and
    **Purchase History** if you call `observePurchases`. If you already declare a user id
    for your revenue provider (Superwall/Stripe), you're most of the way there.
 3. **No device or advertising identifiers.** `Attribura.anonymousId` is a UUID the SDK

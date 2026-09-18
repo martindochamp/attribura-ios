@@ -15,13 +15,16 @@ say *"TikTok installs drop at the notification step, Instagram installs don't."*
 - **No third-party dependencies.** Just `Foundation`/`URLSession`.
 - **Fire-and-forget.** Failed sends are buffered on disk and retried on next launch.
 
+> This folder is the development copy. The published, customer-installable package
+> lives at **https://github.com/martindochamp/attribura-ios** (keep them in sync).
+
 ## Install (Swift Package Manager)
 
 In Xcode: **File → Add Package Dependencies…** and paste
 `https://github.com/martindochamp/attribura-ios`, or add it to your `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/martindochamp/attribura-ios", from: "0.3.3")
+.package(url: "https://github.com/martindochamp/attribura-ios", from: "0.4.0")
 ```
 
 ## Setup
@@ -137,6 +140,22 @@ certified-link posts — a single recent post on that channel lets Attribura nam
 exact content. The rest are captured as **dark social**. Attribution is always
 confidence-scored, never sold as deterministic.
 
+## Retention (nothing to add)
+
+App Store Connect has no retention by cohort: no D1, no D7, no device id in any report.
+Whether an install comes back is only knowable from inside the app, so from **0.4.0**
+the SDK reports it by itself. `configure` sends one `app_open` per install per UTC day,
+and again when the app returns to the foreground on a later day. There is no call to
+add. The dashboard draws D1 / D7 / D28 per install cohort, split by the channel the
+install self-reported.
+
+An install that predates the SDK is kept out of every cohort rather than posing as a
+new install on the day it updated: the open carries the date the app's container was
+created, and the server only cohorts installs it saw from the start.
+
+`Attribura.reportOpen()` is public for platforms that post no foreground notification.
+Calling it more than once a day sends nothing.
+
 ## Report the money (recommended)
 
 Two lines, and no configuration in App Store Connect at all.
@@ -224,6 +243,13 @@ deleting the app deletes it: a reinstall is a new person here, and nothing is
 resurrected from a Keychain that outlives the app. The onboarding run id is held in
 memory for the life of the process and never written to disk.
 
+**Upgrading to 0.4.0:** app opens fall under `Product Interaction`, which the manifest
+already declares. Until now your app's own privacy label only needed it if you called
+`step`; from 0.4.0 every app needs it, because every app reports its opens. The manifest gains the SDK's one
+required-reason API: **File Timestamp, reason C617.1**, to read the creation date of the
+app's own `Library` directory (the install date). Xcode merges it into your app's
+privacy report; there is nothing to declare by hand.
+
 **Upgrading from 0.1.0:** `Product Interaction` is new. If you already shipped with this
 SDK and you start calling `step`, add it to your app's privacy answers in App Store
 Connect. Nothing else about the upgrade is breaking — `configure(onboarding:)` is
@@ -232,7 +258,7 @@ optional and every 0.1.0 call site keeps working unchanged.
 ## Testing
 
 ```
-swift test
+cd sdk/ios && swift test
 ```
 
 The tests use a mock `URLProtocol` — no network required.

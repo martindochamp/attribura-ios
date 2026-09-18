@@ -70,13 +70,24 @@
 			</array>
 		</dict>
 	</array>
-	<!-- No "required reason" APIs: the retry queue is plain file I/O in the caches
-	     directory, the install id is plain file I/O in Application Support
-	     (deliberately NOT UserDefaults, which is one, and deliberately not the
-	     Keychain, which would outlive the app), and the onboarding run id is held
-	     in memory for the life of the process — no file-timestamp, UserDefaults,
-	     disk-space, or boot-time APIs. -->
+	<!-- One "required reason" API: the creation date of the app's own Library
+	     directory, read to know when the app was installed so retention cohorts
+	     start on the right day (C617.1: timestamps of files inside the app
+	     container). Everything else is plain file I/O — the retry queue in the
+	     caches directory, the install id and the last reported day in Application
+	     Support (deliberately NOT UserDefaults, which is another such API, and
+	     deliberately not the Keychain, which would outlive the app). The onboarding
+	     run id is held in memory. No UserDefaults, disk-space or boot-time APIs. -->
 	<key>NSPrivacyAccessedAPITypes</key>
-	<array/>
+	<array>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>C617.1</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>
